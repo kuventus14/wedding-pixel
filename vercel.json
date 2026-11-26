@@ -1,0 +1,11 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm run build",
+  "outputDirectory": "public",
+  "cleanUrls": true,
+  "regions": ["icn1"],
+  "functions": {
+    "api/index.mjs": { "includeFiles": "data/db.json" }
+  },
+  "rewrites": [{ "source": "/(.*)", "destination": "/api" }]
+}

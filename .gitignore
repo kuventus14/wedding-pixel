@@ -5,3 +5,8 @@ data/admin-token.txt
 data/*.tmp
 # poster renders are outputs, the scripts that make them stay
 posters/*.png
+# copied in by `npm run build` for Vercel's static hosting
+public/fonts/
+public/photos/
+public/stage/
+.vercel

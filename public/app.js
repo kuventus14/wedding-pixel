@@ -364,9 +364,13 @@ function applyState(next, entering = new Set()) {
 }
 
 let firstLoad = true;
+// The host's CDN may answer /api/state from a copy up to 5 s old; right after we write, ask past it
+// so our own new character or message is never rolled back (or, worse, our key forgotten).
+let freshUntil = 0;
+const wrote = () => (freshUntil = Date.now() + 10000);
 async function poll() {
   try {
-    const next = await (await fetch('/api/state')).json();
+    const next = await (await fetch('/api/state' + (Date.now() < freshUntil ? `?t=${Date.now()}` : ''))).json();
     if (me && !next.guests.some(x => x.id === me)) { me = myKey = null; localStorage.removeItem('pw.me'); localStorage.removeItem('pw.key'); }
     // after the first load, newcomers walk in through the doors
     applyState(next, firstLoad ? new Set() : new Set(next.guests.map(x => x.id)));
@@ -399,7 +403,7 @@ form.addEventListener('submit', async ev => {
       body: JSON.stringify({ side: form.side.value, gender: form.gender.value, name: form.guestName.value, message: form.message.value, look: previewSeed }) });
     const body = await r.json();
     if (!r.ok) throw new Error(body.error);
-    me = body.id; myKey = body.key;
+    me = body.id; myKey = body.key; wrote();
     localStorage.setItem('pw.me', me); localStorage.setItem('pw.key', myKey);
     applyState({ ...state, guests: [...state.guests, body] }, new Set([me]));
     dlgEnter.close();
@@ -457,6 +461,7 @@ moreForm.addEventListener('submit', async ev => {
       body: JSON.stringify({ message: moreForm.message.value }) });
     const body = await r.json();
     if (!r.ok) throw new Error(body.error);
+    wrote();
     applyState(myRole ? { ...state, couple: body } : { ...state, guests: state.guests.map(x => (x.id === me ? body : x)) });
     dlgMore.close();
     scrollTo({ top: 0, behavior: 'smooth' }); // back to the stage, where the new bubble shows

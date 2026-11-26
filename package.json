@@ -4,9 +4,11 @@
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
+    "build": "mkdir -p public/fonts public/photos public/stage && cp node_modules/galmuri/dist/Galmuri9.woff2 node_modules/galmuri/dist/Galmuri11.woff2 node_modules/galmuri/dist/Galmuri11-Bold.woff2 public/fonts/ && cp -R data/photos/. public/photos/ && cp -R data/stage/. public/stage/",
     "test": "node --test"
   },
   "dependencies": {
+    "@vercel/blob": "^2.9.0",
     "galmuri": "^2.40.3",
     "qrcode": "^1.5.4"
   }

@@ -15,32 +15,79 @@ const DB_FILE = path.join(DATA, 'db.json');
 const PUBLIC = path.join(ROOT, 'public');
 const FONTS = path.join(ROOT, 'node_modules/galmuri/dist');
 const MAX_GUESTS = 1000, MAX_MESSAGES = 10, MAX_GREETINGS = 20, MAX_COMMENTS = 500;
-fs.mkdirSync(PHOTOS, { recursive: true });
 
-const TOKEN_FILE = path.join(DATA, 'admin-token.txt');
+// Two ways to store: files in data/ (running on a computer), or Upstash Redis + Vercel Blob
+// (on Vercel, whose disk is read-only and forgets everything between requests).
+const REDIS_URL = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
+const REDIS_TOKEN = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+const CLOUD = !!(REDIS_URL && REDIS_TOKEN);
+const NO_STORE = !!process.env.VERCEL && !CLOUD; // deployed to Vercel before Redis was connected
+const FILES = !CLOUD && !NO_STORE;
+
 // On a host, set ADMIN_TOKEN in its settings — the password must never live in the public repo.
-if (!process.env.ADMIN_TOKEN && !fs.existsSync(TOKEN_FILE)) fs.writeFileSync(TOKEN_FILE, crypto.randomBytes(12).toString('hex'), { mode: 0o600 });
-const ADMIN_TOKEN = (process.env.ADMIN_TOKEN || fs.readFileSync(TOKEN_FILE, 'utf8')).trim();
+const TOKEN_FILE = path.join(DATA, 'admin-token.txt');
+if (FILES) {
+  fs.mkdirSync(PHOTOS, { recursive: true });
+  if (!process.env.ADMIN_TOKEN && !fs.existsSync(TOKEN_FILE)) fs.writeFileSync(TOKEN_FILE, crypto.randomBytes(12).toString('hex'), { mode: 0o600 });
+}
+const ADMIN_TOKEN = (process.env.ADMIN_TOKEN || (FILES ? fs.readFileSync(TOKEN_FILE, 'utf8') : '')).trim();
+if (!ADMIN_TOKEN) console.warn('ADMIN_TOKEN 이 없어 관리자·신랑신부 기능이 꺼져 있어요');
 
-let db = fs.existsSync(DB_FILE)
+function normalize(db) {
+  // older saves kept one message per guest
+  for (const g of db.guests) if (!g.messages) { g.messages = [g.message]; delete g.message; }
+  db.couple.greetings ??= { groom: [], bride: [] };
+  db.photoMeta ??= {}; // album likes & comments, by photo id
+  return db;
+}
+const fileDb = !FILES ? null : normalize(fs.existsSync(DB_FILE)
   ? JSON.parse(fs.readFileSync(DB_FILE, 'utf8'))
-  : { couple: { groom: '신랑', bride: '신부', date: '', siteUrl: '' }, guests: [], photos: [] };
-// older saves kept one message per guest
-for (const g of db.guests) if (!g.messages) { g.messages = [g.message]; delete g.message; }
-db.couple.greetings ??= { groom: [], bride: [] };
-db.photoMeta ??= {}; // album likes & comments, by photo id
-function save() {
+  : { couple: { groom: '신랑', bride: '신부', date: '', siteUrl: '' }, guests: [], photos: [] });
+
+async function redis(...cmd) {
+  const r = await fetch(REDIS_URL, { method: 'POST', headers: { Authorization: `Bearer ${REDIS_TOKEN}` }, body: JSON.stringify(cmd) });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok || body.error) throw new Error(`redis ${cmd[0]}: ${body.error || r.status}`);
+  return body.result;
+}
+const DB_KEY = 'pw:db', LOCK_KEY = 'pw:lock';
+async function loadDb() {
+  let raw = await redis('GET', DB_KEY);
+  if (raw == null) { // first run on the host: start from the state committed in data/db.json
+    await redis('SET', DB_KEY, fs.readFileSync(path.join(ROOT, 'data/db.json'), 'utf8'), 'NX');
+    raw = await redis('GET', DB_KEY);
+  }
+  return normalize(JSON.parse(raw));
+}
+// One writer at a time across every server instance, so two guests entering together both get saved.
+async function locked(fn) {
+  const me = crypto.randomUUID(), giveUp = Date.now() + 8000;
+  while ((await redis('SET', LOCK_KEY, me, 'NX', 'PX', '10000')) !== 'OK') {
+    if (Date.now() > giveUp) throw new HttpError(503, '사람이 많아요. 잠시 후 다시 눌러 주세요');
+    await new Promise(r => setTimeout(r, 30 + Math.random() * 70));
+  }
+  try { return await fn(); }
+  finally {
+    await redis('EVAL', "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) end return 0", '1', LOCK_KEY, me)
+      .catch(err => console.error(err));
+  }
+}
+async function save(db) {
+  if (CLOUD) return redis('SET', DB_KEY, JSON.stringify(db));
   // write-then-rename so a crash mid-write never leaves a half-written db
   fs.writeFileSync(DB_FILE + '.tmp', JSON.stringify(db));
   fs.renameSync(DB_FILE + '.tmp', DB_FILE);
 }
 
+let server; // only when run directly (npm start); on Vercel the handler is called per request
 function lanUrl() {
+  if (!server) return process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}/` : null;
   for (const list of Object.values(os.networkInterfaces()))
     for (const a of list || []) if (a.family === 'IPv4' && !a.internal) return `http://${a.address}:${server.address().port}/`;
   return `http://localhost:${server.address().port}/`;
 }
-const guestUrl = () => db.couple.siteUrl || process.env.PUBLIC_URL || lanUrl();
+const guestUrl = (db, req) => db.couple.siteUrl || process.env.PUBLIC_URL || lanUrl()
+  || `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers['x-forwarded-host'] || req.headers.host}/`; // the address this request came to
 
 class HttpError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
 
@@ -73,7 +120,7 @@ function sameSecret(given, expected) {
 const isAdmin = req => sameSecret(req.headers['x-admin-token'], ADMIN_TOKEN);
 
 // who is liking/commenting: the bride or groom (admin password + role) or a guest who entered (id + key)
-function actor(req) {
+function actor(req, db) {
   const role = req.headers['x-couple-role'];
   if ((role === 'groom' || role === 'bride') && isAdmin(req)) return { key: `c:${role}`, role };
   const g = db.guests.find(x => x.id === req.headers['x-guest-id']);
@@ -92,14 +139,14 @@ function decodeImage(dataUrl) {
 }
 
 const publicGuest = ({ id, side, name, gender, messages, look, createdAt }) => ({ id, side, name, gender, messages, look, createdAt });
-const publicState = () => ({
+const publicState = db => ({
   couple: { groom: db.couple.groom, bride: db.couple.bride, date: db.couple.date, greetings: db.couple.greetings },
-  photos: db.photos.map(p => ({ id: p.id, src: `/photos/${p.file}` })),
+  photos: db.photos.map(p => ({ id: p.id, src: p.url || `/photos/${p.file}` })), // url: uploaded to Vercel Blob
   guests: db.guests.map(publicGuest),
 });
 
 // Excel-friendly CSV: BOM so Korean opens correctly, one block per side, guest text never runs as a formula
-function messagesCsv() {
+function messagesCsv(db) {
   const cell = v => {
     let s = String(v ?? '');
     if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
@@ -139,17 +186,20 @@ function sendFile(req, res, base, rel) {
   });
 }
 
-function json(res, status, body) {
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+function json(res, status, body, extra) {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...extra });
   res.end(JSON.stringify(body));
 }
 
-async function route(req, res) {
+async function route(req, res, db) {
   const url = new URL(req.url, 'http://x');
   const p = decodeURIComponent(url.pathname);
   const m = req.method;
 
-  if (m === 'GET' && p === '/api/state') return json(res, 200, publicState());
+  // Every open phone asks for this every 5 s; on Vercel its CDN answers repeats for 2 s so the
+  // database sees a handful of reads instead of hundreds. Writers ask with ?t= for a fresh copy.
+  if (m === 'GET' && p === '/api/state')
+    return json(res, 200, publicState(db), url.search ? {} : { 'Vercel-CDN-Cache-Control': 'max-age=2, stale-while-revalidate=3' });
 
   if (m === 'POST' && p === '/api/guests') {
     if (db.guests.length >= MAX_GUESTS) throw new HttpError(429, '방명록이 가득 찼어요');
@@ -162,7 +212,7 @@ async function route(req, res) {
       key: crypto.randomBytes(16).toString('hex'), // lets only this guest's phone add more messages
       look: Number.isInteger(b.look) && b.look > 0 && b.look < 2 ** 31 ? b.look : crypto.randomInt(1, 2 ** 31), createdAt: Date.now(),
     };
-    db.guests.push(guest); save();
+    db.guests.push(guest); await save(db);
     return json(res, 201, { ...publicGuest(guest), key: guest.key });
   }
 
@@ -182,14 +232,14 @@ async function route(req, res) {
     const x = (db.photoMeta[pid] ??= { likes: [], comments: [] });
     const list = () => x.comments.map(({ id, parentId, by, text, createdAt }) => ({ id, parentId, by, text, createdAt }));
     if (what === 'like' && m === 'POST' && !cid) {
-      const a = actor(req), i = x.likes.indexOf(a.key);
+      const a = actor(req, db), i = x.likes.indexOf(a.key);
       if (i >= 0) x.likes.splice(i, 1); else x.likes.push(a.key);
-      save();
+      await save(db);
       return json(res, 200, { likes: x.likes.length, liked: i < 0 });
     }
     if (what === 'comments' && m === 'GET' && !cid) return json(res, 200, list());
     if (what === 'comments' && m === 'POST' && !cid) {
-      const a = actor(req);
+      const a = actor(req, db);
       if (x.comments.length >= MAX_COMMENTS) throw new HttpError(400, '댓글이 너무 많아요');
       const b = await readJson(req, 4096);
       let parentId = null;
@@ -200,14 +250,14 @@ async function route(req, res) {
       }
       x.comments.push({ id: crypto.randomUUID(), parentId, text: text(b.text, 100, '댓글'), createdAt: Date.now(),
         by: a.role ? { role: a.role } : { guestId: a.guestId, name: a.name, side: a.side } });
-      save();
+      await save(db);
       return json(res, 201, list());
     }
     if (what === 'comments' && m === 'DELETE' && cid) {
-      if (!actor(req).role) throw new HttpError(403, '댓글은 신랑·신부만 지울 수 있어요');
+      if (!actor(req, db).role) throw new HttpError(403, '댓글은 신랑·신부만 지울 수 있어요');
       if (!x.comments.some(c => c.id === cid)) throw new HttpError(404, '없는 댓글이에요');
       x.comments = x.comments.filter(c => c.id !== cid && c.parentId !== cid); // its replies go too
-      save();
+      await save(db);
       return json(res, 200, list());
     }
     throw new HttpError(405, 'method not allowed');
@@ -219,8 +269,8 @@ async function route(req, res) {
     const list = db.couple.greetings[greet[1]];
     if (list.length >= MAX_GREETINGS) throw new HttpError(400, `인삿말은 ${MAX_GREETINGS}개까지 남길 수 있어요`);
     const b = await readJson(req, 4096);
-    list.push(text(b.message, 80, '인삿말')); save();
-    return json(res, 201, publicState().couple);
+    list.push(text(b.message, 80, '인삿말')); await save(db);
+    return json(res, 201, publicState(db).couple);
   }
 
   const more = /^\/api\/guests\/([0-9a-f-]{36})\/messages$/.exec(p);
@@ -230,12 +280,12 @@ async function route(req, res) {
     if (!sameSecret(req.headers['x-guest-key'], guest.key)) throw new HttpError(403, '내 캐릭터에만 메시지를 더 남길 수 있어요');
     if (guest.messages.length >= MAX_MESSAGES) throw new HttpError(400, `축하 메시지는 ${MAX_MESSAGES}개까지 남길 수 있어요`);
     const b = await readJson(req, 4096);
-    guest.messages.push(text(b.message, 80, '축하 메시지')); save();
+    guest.messages.push(text(b.message, 80, '축하 메시지')); await save(db);
     return json(res, 201, publicGuest(guest));
   }
 
   if (m === 'GET' && p === '/qr.png') {
-    const png = await QRCode.toBuffer(guestUrl(), { width: 1024, margin: 2, errorCorrectionLevel: 'M' });
+    const png = await QRCode.toBuffer(guestUrl(db, req), { width: 1024, margin: 2, errorCorrectionLevel: 'M' });
     const headers = { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' };
     if (url.searchParams.has('download')) headers['Content-Disposition'] = 'attachment; filename="wedding-qr.png"';
     res.writeHead(200, headers); return res.end(png);
@@ -248,26 +298,30 @@ async function route(req, res) {
     if (m === 'GET' && sub === 'messages.csv') {
       res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Cache-Control': 'no-store',
         'Content-Disposition': `attachment; filename="messages.csv"; filename*=UTF-8''${encodeURIComponent('축하메시지.csv')}` });
-      return res.end(messagesCsv());
+      return res.end(messagesCsv(db));
     }
 
-    if (m === 'GET' && sub === 'config') return json(res, 200, { couple: db.couple, guestUrl: guestUrl(), lanUrl: lanUrl(), photos: db.photos });
+    if (m === 'GET' && sub === 'config') return json(res, 200, { couple: db.couple, guestUrl: guestUrl(db, req), lanUrl: lanUrl(), cloud: CLOUD, photos: db.photos });
 
     if (m === 'PUT' && sub === 'couple') {
       const b = await readJson(req, 4096);
       const siteUrl = text(b.siteUrl, 300, '사이트 주소', false);
       if (siteUrl && !/^https?:\/\/\S+$/.test(siteUrl)) throw new HttpError(400, '사이트 주소는 http:// 또는 https:// 로 시작해야 해요');
       db.couple = { ...db.couple, groom: text(b.groom, 10, '신랑 이름'), bride: text(b.bride, 10, '신부 이름'), date: text(b.date, 40, '날짜', false), siteUrl };
-      save();
-      return json(res, 200, { couple: db.couple, guestUrl: guestUrl() });
+      await save(db);
+      return json(res, 200, { couple: db.couple, guestUrl: guestUrl(db, req) });
     }
 
     if (m === 'POST' && sub === 'photos') {
       const b = await readJson(req, 12 * 1024 * 1024);
       const { ext, buf } = decodeImage(b.dataUrl);
-      const id = crypto.randomUUID();
-      fs.writeFileSync(path.join(PHOTOS, `${id}.${ext}`), buf);
-      db.photos.push({ id, file: `${id}.${ext}` }); save();
+      const id = crypto.randomUUID(), photo = { id, file: `${id}.${ext}` };
+      if (CLOUD) {
+        const { put } = await import('@vercel/blob');
+        try { photo.url = (await put(`photos/${photo.file}`, buf, { access: 'public', contentType: TYPES['.' + ext] })).url; }
+        catch (err) { console.error(err); throw new HttpError(503, '사진 저장소(Vercel Blob)에 올리지 못했어요. Blob 이 연결됐는지 확인해 주세요'); }
+      } else fs.writeFileSync(path.join(PHOTOS, photo.file), buf);
+      db.photos.push(photo); await save(db);
       return json(res, 201, { photos: db.photos });
     }
 
@@ -275,8 +329,10 @@ async function route(req, res) {
     if (m === 'DELETE' && del) {
       const photo = db.photos.find(x => x.id === del[1]);
       if (!photo) throw new HttpError(404, '없는 사진이에요');
-      db.photos = db.photos.filter(x => x !== photo); delete db.photoMeta[photo.id]; save();
-      fs.rm(path.join(PHOTOS, photo.file), () => {});
+      db.photos = db.photos.filter(x => x !== photo); delete db.photoMeta[photo.id]; await save(db);
+      // photos that shipped with the repo are static files on Vercel: dropping them from the list is enough
+      if (photo.url) await (await import('@vercel/blob')).del(photo.url).catch(err => console.error(err));
+      else if (!CLOUD) fs.rm(path.join(PHOTOS, photo.file), () => {});
       return json(res, 200, { photos: db.photos });
     }
     throw new HttpError(404, '없는 요청이에요');
@@ -291,16 +347,25 @@ async function route(req, res) {
   return sendFile(req, res, PUBLIC, p.slice(1));
 }
 
-const server = http.createServer((req, res) => {
-  route(req, res).catch(err => {
+// The request handler: Vercel calls it from api/index.mjs, `npm start` wraps it in a server.
+export async function handler(req, res) {
+  try {
+    if (NO_STORE) throw new HttpError(503, '저장소(Upstash Redis)가 아직 연결되지 않았어요');
+    if (!CLOUD) return await route(req, res, fileDb);
+    if (req.method === 'GET' || req.method === 'HEAD') return await route(req, res, await loadDb());
+    await locked(async () => route(req, res, await loadDb())); // read-change-write while nobody else writes
+  } catch (err) {
     if (!(err instanceof HttpError)) console.error(err);
     if (!res.headersSent) json(res, err.status || 500, { error: err instanceof HttpError ? err.message : '서버 오류가 났어요' });
-  });
-});
+  }
+}
 
-server.listen(PORT, '0.0.0.0', () => {
-  const port = server.address().port;
-  console.log(`listening ${port}`);
-  console.log(`하객 화면:   http://localhost:${port}/`);
-  console.log(`관리자 화면: http://localhost:${port}/admin  (비밀번호: ${ADMIN_TOKEN})`);
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  server = http.createServer(handler);
+  server.listen(PORT, '0.0.0.0', () => {
+    const port = server.address().port;
+    console.log(`listening ${port}${CLOUD ? ' (Redis 저장)' : ''}`);
+    console.log(`하객 화면:   http://localhost:${port}/`);
+    console.log(`관리자 화면: http://localhost:${port}/admin  (비밀번호: ${ADMIN_TOKEN})`);
+  });
+}

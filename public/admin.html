@@ -85,6 +85,7 @@ async function start() {
     const f = $('#info');
     for (const k of ['groom', 'bride', 'date', 'siteUrl']) f[k].value = cfg.couple[k] || '';
     $('#lanUrl').textContent = cfg.lanUrl;
+    if (cfg.cloud) $('#lanUrl').parentElement.textContent = `비워 두면 배포 주소 ${cfg.lanUrl || cfg.guestUrl} 이 들어가요.`;
     showUrl(cfg.guestUrl); showPhotos(cfg.photos);
   } catch (e) {
     $('#login').hidden = false; $('#panel').hidden = true;
@@ -102,7 +103,7 @@ function showPhotos(photos) {
   $('#photoNum').textContent = photos.length ? `${photos.length}장` : '';
   $('#photoGrid').replaceChildren(...photos.map(p => {
     const fig = document.createElement('figure');
-    const img = new Image(); img.src = '/photos/' + p.file; img.alt = ''; img.loading = 'lazy';
+    const img = new Image(); img.src = p.url || '/photos/' + p.file; img.alt = ''; img.loading = 'lazy';
     const del = document.createElement('button'); del.type = 'button'; del.textContent = '×'; del.setAttribute('aria-label', '이 사진 지우기');
     del.onclick = async () => {
       if (!confirm('이 사진을 지울까요? 되돌릴 수 없어요.')) return;
