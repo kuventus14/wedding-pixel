@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#07060B">
+<title>픽셀 방명록</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body class="hall-page">
+<div id="world"><canvas id="hall" aria-label="그랜드볼룸에 모인 하객 캐릭터들. 캐릭터를 누르면 축하 메시지가 보여요."></canvas></div>
+
+<header class="couple">
+  <h1><span id="groomName">신랑</span><svg class="heart" viewBox="0 0 7 6" aria-label="그리고"><path d="M1 0h2v1h1V0h2v1h1v2H6v1H5v1H4v1H3V5H2V4H1V3H0V1h1z"/></svg><span id="brideName">신부</span></h1>
+  <p id="weddingDate" hidden></p>
+  <p class="sides"><span class="chip groom">신랑측 <b id="cntGroom">0</b></span><span class="chip bride">신부측 <b id="cntBride">0</b></span></p>
+</header>
+
+<div class="dock">
+  <button id="btnMusic" class="px-btn icon" type="button" aria-label="배경음악" aria-pressed="false">
+    <svg viewBox="0 0 12 12" aria-hidden="true"><path class="spk" d="M1 4h2l3-3v10L3 8H1z"/><path class="on" d="M8 3h1v1h1v4H9v1H8V8h1V4H8zM7 5h1v2H7z"/><path class="off" d="M7 4h1v1h1V4h1v1H9v1h1v1H9v1H8V7H7v1H6V7h1V6H6V5h1z" transform="translate(1 0)"/></svg>
+  </button>
+  <button id="btnList" class="px-btn icon" type="button" aria-label="축하 메시지 목록">
+    <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M1 2h4v1h1v8H5v-1H1zM7 2h4v8H7v1H6V3h1z"/></svg>
+  </button>
+  <button id="btnPhotos" class="px-btn icon" type="button" aria-label="웨딩 사진">
+    <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M1 2h10v8H1zm1 1v5l3-3 2 2 1-1 2 2V3zm6 1h1v1H8z" fill-rule="evenodd"/></svg>
+  </button>
+</div>
+<button id="btnEnter" class="px-btn enter" type="button">입장하기</button>
+<button id="btnMore" class="px-btn more" type="button" hidden>메시지 더 남기기</button>
+<p id="hint" class="hint" hidden>원하는 곳을 누르면 내 캐릭터가 걸어가요</p>
+<p id="nowPlaying" class="now-playing" role="status" hidden></p>
+
+<dialog id="dlgEnter" class="sheet" aria-labelledby="enterTitle">
+  <form id="enterForm" method="dialog" novalidate>
+    <div class="sheet-head">
+      <h2 id="enterTitle">하객 입장</h2>
+      <button class="close" type="submit" value="cancel" formnovalidate aria-label="닫기">×</button>
+    </div>
+    <div class="couple-entry">
+      <span>신랑·신부이신가요?</span>
+      <button class="px-btn small" type="button" data-role="groom" aria-pressed="false">신랑 입장</button>
+      <button class="px-btn small" type="button" data-role="bride" aria-pressed="false">신부 입장</button>
+      <span id="coupleAsk" class="csv-ask" hidden>
+        <input id="couplePw" type="password" inputmode="numeric" autocomplete="off" placeholder="비밀번호" aria-label="신랑·신부 비밀번호">
+        <button id="coupleGo" class="px-btn small" type="button">입장</button>
+      </span>
+      <p id="coupleError" class="error" role="alert"></p>
+    </div>
+    <div class="me-preview">
+      <img id="preview" class="preview" alt="내 캐릭터 미리보기" width="70" height="100">
+      <button id="reroll" class="px-btn small" type="button">다른 모습</button>
+    </div>
+    <fieldset class="seg">
+      <legend>누구의 하객인가요?</legend>
+      <label class="groom"><input type="radio" name="side" value="groom"><span>신랑측</span></label>
+      <label class="bride"><input type="radio" name="side" value="bride"><span>신부측</span></label>
+    </fieldset>
+    <label class="field">이름<input name="guestName" maxlength="10" autocomplete="name" required placeholder="캐릭터 아래에 보일 이름"></label>
+    <fieldset class="seg">
+      <legend>성별</legend>
+      <label><input type="radio" name="gender" value="m"><span>남자</span></label>
+      <label><input type="radio" name="gender" value="f"><span>여자</span></label>
+    </fieldset>
+    <label class="field">축하 메시지<textarea name="message" maxlength="80" rows="3" required placeholder="두 사람에게 한마디"></textarea>
+      <small class="count"><span id="msgCount">0</span>/80</small></label>
+    <p id="enterError" class="error" role="alert"></p>
+    <button class="px-btn enter wide" type="submit">입장하기</button>
+  </form>
+</dialog>
+
+<dialog id="dlgMore" class="sheet" aria-labelledby="moreTitle">
+  <form id="moreForm" method="dialog" novalidate>
+    <div class="sheet-head">
+      <h2 id="moreTitle">축하 메시지 더 남기기</h2>
+      <button class="close" type="submit" value="cancel" formnovalidate aria-label="닫기">×</button>
+    </div>
+    <p id="mineLabel" class="mine-label">지금까지 남긴 메시지</p>
+    <ol id="myMessages" class="my-msgs"></ol>
+    <label class="field">새 메시지<textarea name="message" maxlength="80" rows="3" required placeholder="하고 싶은 말을 더 남겨 주세요"></textarea>
+      <small class="count"><span id="moreCount">0</span>/80</small></label>
+    <p id="moreError" class="error" role="alert"></p>
+    <button class="px-btn enter wide" type="submit">남기기</button>
+  </form>
+</dialog>
+
+<dialog id="dlgList" class="sheet" aria-labelledby="listTitle">
+  <div class="sheet-head">
+    <h2 id="listTitle">축하 메시지</h2>
+    <form method="dialog"><button class="close" aria-label="닫기">×</button></form>
+  </div>
+  <form id="csvForm" class="csv-form" novalidate>
+    <button id="csvOpen" class="px-btn small" type="button">엑셀로 내려받기</button>
+    <span id="csvAsk" class="csv-ask" hidden>
+      <input name="pw" type="password" inputmode="numeric" autocomplete="off" placeholder="관리자 비밀번호" aria-label="관리자 비밀번호">
+      <button class="px-btn small" type="submit">내려받기</button>
+    </span>
+    <p id="csvError" class="error" role="alert"></p>
+  </form>
+  <div class="sides-list">
+    <section class="side groom"><h3>신랑측 <b id="listCount-groom">0</b></h3><ul id="list-groom"></ul></section>
+    <section class="side bride"><h3>신부측 <b id="listCount-bride">0</b></h3><ul id="list-bride"></ul></section>
+  </div>
+</dialog>
+
+<dialog id="dlgPhotos" class="gallery" aria-label="웨딩 사진">
+  <form method="dialog"><button class="close light" aria-label="닫기">×</button></form>
+  <div id="photoTrack" class="track"></div>
+  <div class="reel-actions">
+    <button id="likeBtn" class="reel-btn" type="button" aria-pressed="false" aria-label="좋아요">
+      <svg viewBox="0 0 7 6" aria-hidden="true"><path d="M1 0h2v1h1V0h2v1h1v2H6v1H5v1H4v1H3V5H2V4H1V3H0V1h1z"/></svg><span id="likeCount">0</span>
+    </button>
+    <button id="commentBtn" class="reel-btn" type="button" aria-label="댓글">
+      <svg viewBox="0 0 8 8" aria-hidden="true"><path d="M1 0h6v1h1v4H7v1H4L2 8V6H1V5H0V1h1z"/></svg><span id="commentCount">0</span>
+    </button>
+  </div>
+  <div class="gallery-nav">
+    <button id="prevPhoto" class="px-btn small" type="button" aria-label="이전 사진">‹</button>
+    <span id="photoCount"></span>
+    <button id="nextPhoto" class="px-btn small" type="button" aria-label="다음 사진">›</button>
+  </div>
+</dialog>
+
+<dialog id="dlgComments" class="sheet comments" aria-labelledby="commentsTitle">
+  <div class="sheet-head">
+    <h2 id="commentsTitle">댓글</h2>
+    <form method="dialog"><button class="close" aria-label="닫기">×</button></form>
+  </div>
+  <ul id="commentList" class="comment-list"></ul>
+  <form id="commentForm" class="comment-form" novalidate>
+    <p id="replyTo" class="reply-to" hidden><span></span><button id="replyCancel" type="button" aria-label="답글 취소">×</button></p>
+    <div class="comment-row">
+      <input name="text" maxlength="100" autocomplete="off" placeholder="댓글 달기" aria-label="댓글">
+      <button class="px-btn small" type="submit">게시</button>
+    </div>
+    <p id="commentError" class="error" role="alert"></p>
+  </form>
+</dialog>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>방명록 관리</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body class="admin-page">
+<main class="admin">
+  <h1>신랑·신부 관리</h1>
+  <p class="lead">이름과 사진을 넣고, QR을 청첩장에 붙이세요.</p>
+
+  <form id="login" class="card" hidden>
+    <h2>관리자 비밀번호</h2>
+    <label class="field">비밀번호<input name="token" type="password" autocomplete="current-password" required></label>
+    <p id="loginError" class="error" role="alert"></p>
+    <button class="px-btn enter" type="submit">들어가기</button>
+  </form>
+
+  <div id="panel" hidden>
+    <form id="info" class="card">
+      <h2>기본 정보</h2>
+      <div class="row2">
+        <label class="field">신랑 이름<input name="groom" maxlength="10" required></label>
+        <label class="field">신부 이름<input name="bride" maxlength="10" required></label>
+      </div>
+      <label class="field">날짜·시간<input name="date" maxlength="40" placeholder="2026. 12. 19 토요일 낮 12시 30분"></label>
+      <label class="field">하객 링크 주소<input name="siteUrl" maxlength="300" inputmode="url" placeholder="비워 두면 이 컴퓨터 주소를 써요"></label>
+      <p class="note">인터넷에 올린 뒤엔 그 주소를 넣으세요. 비워 두면 <span id="lanUrl"></span> 이 들어가고, 같은 와이파이에서만 열려요.</p>
+      <p id="infoStatus" class="status" role="status"></p>
+      <button class="px-btn enter" type="submit">저장하기</button>
+    </form>
+
+    <section class="card">
+      <h2>QR 코드</h2>
+      <div class="qr-box">
+        <img id="qr" alt="하객 링크로 가는 QR 코드" width="180" height="180">
+        <div>
+          <p id="guestUrl" class="qr-url"></p>
+          <div class="actions">
+            <a class="px-btn small" href="/qr.png?download" download>QR 내려받기</a>
+            <button id="copyUrl" class="px-btn small" type="button">주소 복사</button>
+            <a id="openGuest" class="px-btn small" target="_blank" rel="noopener">하객 화면 열기</a>
+          </div>
+          <p class="note">청첩장이나 식장 안내판에 넣으면 하객이 찍어서 바로 들어와요.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>축하 메시지</h2>
+      <button id="csvBtn" class="px-btn enter" type="button">엑셀로 내려받기</button>
+      <p class="note">신랑측·신부측 표가 나뉘고, 이름·성별·축하 메시지 칸으로 정리돼요.</p>
+      <p id="csvStatus" class="status" role="status"></p>
+    </section>
+
+    <section class="card">
+      <h2>웨딩 사진 <span id="photoNum"></span></h2>
+      <label class="upload px-btn enter">사진 올리기<input id="files" type="file" accept="image/jpeg,image/png,image/webp,image/*" multiple></label>
+      <p id="photoStatus" class="status" role="status"></p>
+      <div id="photoGrid" class="photo-grid"></div>
+    </section>
+  </div>
+</main>
+
+<script type="module">
+const $ = s => document.querySelector(s);
+let token = new URLSearchParams(location.search).get('key') || localStorage.getItem('pw.admin') || '';
+
+async function api(path, opts = {}) {
+  const r = await fetch('/api/admin/' + path, { ...opts, headers: { 'content-type': 'application/json', 'x-admin-token': token, ...opts.headers } });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw Object.assign(new Error(body.error || '요청이 실패했어요'), { status: r.status });
+  return body;
+}
+
+async function start() {
+  try {
+    const cfg = await api('config');
+    localStorage.setItem('pw.admin', token);
+    if (location.search) history.replaceState(null, '', '/admin'); // keep the password out of the address bar
+    $('#login').hidden = true; $('#panel').hidden = false;
+    const f = $('#info');
+    for (const k of ['groom', 'bride', 'date', 'siteUrl']) f[k].value = cfg.couple[k] || '';
+    $('#lanUrl').textContent = cfg.lanUrl;
+    showUrl(cfg.guestUrl); showPhotos(cfg.photos);
+  } catch (e) {
+    $('#login').hidden = false; $('#panel').hidden = true;
+    if (token) $('#loginError').textContent = e.status === 401 ? '비밀번호가 맞지 않아요' : e.message;
+  }
+}
+
+function showUrl(url) {
+  $('#guestUrl').textContent = url;
+  $('#openGuest').href = url;
+  $('#qr').src = '/qr.png?t=' + Date.now();
+}
+
+function showPhotos(photos) {
+  $('#photoNum').textContent = photos.length ? `${photos.length}장` : '';
+  $('#photoGrid').replaceChildren(...photos.map(p => {
+    const fig = document.createElement('figure');
+    const img = new Image(); img.src = '/photos/' + p.file; img.alt = ''; img.loading = 'lazy';
+    const del = document.createElement('button'); del.type = 'button'; del.textContent = '×'; del.setAttribute('aria-label', '이 사진 지우기');
+    del.onclick = async () => {
+      if (!confirm('이 사진을 지울까요? 되돌릴 수 없어요.')) return;
+      try { showPhotos((await api('photos/' + p.id, { method: 'DELETE' })).photos); } catch (e) { $('#photoStatus').textContent = e.message; }
+    };
+    fig.append(img, del); return fig;
+  }));
+}
+
+$('#login').onsubmit = ev => { ev.preventDefault(); token = ev.target.token.value.trim(); start(); };
+
+$('#info').onsubmit = async ev => {
+  ev.preventDefault();
+  const f = ev.target, st = $('#infoStatus');
+  try {
+    const body = Object.fromEntries(['groom', 'bride', 'date', 'siteUrl'].map(k => [k, f[k].value]));
+    const r = await api('couple', { method: 'PUT', body: JSON.stringify(body) });
+    showUrl(r.guestUrl); st.textContent = '저장했어요';
+  } catch (e) { st.textContent = e.message; }
+};
+
+$('#copyUrl').onclick = async () => {
+  try { await navigator.clipboard.writeText($('#guestUrl').textContent); $('#copyUrl').textContent = '복사했어요'; }
+  catch { $('#copyUrl').textContent = '복사 안 됨'; }
+  setTimeout(() => ($('#copyUrl').textContent = '주소 복사'), 1500);
+};
+
+$('#csvBtn').onclick = async () => {
+  const st = $('#csvStatus');
+  try {
+    const r = await fetch('/api/admin/messages.csv', { headers: { 'x-admin-token': token } });
+    if (!r.ok) throw new Error(r.status === 401 ? '비밀번호가 맞지 않아요' : '내려받지 못했어요');
+    const f = $('#info');
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(await r.blob()), download: `축하메시지_${f.groom.value}_${f.bride.value}.csv` });
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
+    st.textContent = '내려받았어요';
+  } catch (e) { st.textContent = e.message; }
+};
+
+// shrink on the phone/PC before upload so a 12MP photo becomes ~400KB
+async function toJpeg(file) {
+  const bmp = await createImageBitmap(file);
+  const k = Math.min(1, 1800 / Math.max(bmp.width, bmp.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+  return c.toDataURL('image/jpeg', 0.86);
+}
+
+$('#files').onchange = async ev => {
+  const files = [...ev.target.files], st = $('#photoStatus');
+  let done = 0, failed = 0;
+  for (const file of files) {
+    st.textContent = `${files.length}장 중 ${done + failed + 1}번째 올리는 중…`;
+    try { showPhotos((await api('photos', { method: 'POST', body: JSON.stringify({ dataUrl: await toJpeg(file) }) })).photos); done++; }
+    catch (e) { failed++; console.warn(file.name, e); }
+  }
+  st.textContent = failed ? `${done}장 올렸고 ${failed}장은 못 올렸어요 (JPG·PNG만 돼요)` : `${done}장 올렸어요`;
+  ev.target.value = '';
+};
+
+start();
+</script>
+</body>
+</html>

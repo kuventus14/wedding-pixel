@@ -1,0 +1,13 @@
+{
+  "name": "pixel-wedding",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "galmuri": "^2.40.3",
+    "qrcode": "^1.5.4"
+  }
+}

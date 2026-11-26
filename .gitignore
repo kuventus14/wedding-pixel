@@ -1,0 +1,7 @@
+node_modules/
+.DS_Store
+# the admin password: set ADMIN_TOKEN on the host instead
+data/admin-token.txt
+data/*.tmp
+# poster renders are outputs, the scripts that make them stay
+posters/*.png
