@@ -1,5 +1,6 @@
 # Pastes a real, scannable QR into the blank white square the image model left on a poster.
-# usage: python3 add_qr.py poster.png out.png URL [scale]
+# usage: python3 add_qr.py poster.png out.png URL [scale] [qr.png]
+#   qr.png: paste this ready-made QR image (e.g. the admin page's download) instead of making one
 # The model can't draw a working QR, so it only draws the empty square; this finds that square,
 # upscales the poster for print and draws the QR crisply at the final size.
 import subprocess, sys
@@ -40,11 +41,14 @@ assert height > 0.12 * H and abs(width - height) < 0.08 * width, f'no blank squa
 big = img.resize((W * scale, H * scale), Image.LANCZOS)
 inset = int(width * 0.04)
 side = (min(width, height) - 2 * inset) * scale
-qr_path = Path(out).resolve().with_suffix('.qr.png')
-subprocess.run(['node', '-e', "require('qrcode').toFile(process.argv[1], process.argv[2], { width: +process.argv[3], margin: 1, errorCorrectionLevel: 'M' })",
-                str(qr_path), url, str(side)], cwd=Path(__file__).parent.parent, check=True)
-qr = Image.open(qr_path).convert('RGB').resize((side, side), Image.NEAREST)
+if len(sys.argv) > 5:
+    qr = Image.open(sys.argv[5]).convert('RGB').resize((side, side), Image.NEAREST)
+else:
+    qr_path = Path(out).resolve().with_suffix('.qr.png')
+    subprocess.run(['node', '-e', "require('qrcode').toFile(process.argv[1], process.argv[2], { width: +process.argv[3], margin: 1, errorCorrectionLevel: 'M' })",
+                    str(qr_path), url, str(side)], cwd=Path(__file__).parent.parent, check=True)
+    qr = Image.open(qr_path).convert('RGB').resize((side, side), Image.NEAREST)
+    qr_path.unlink()
 big.paste(qr, (left * scale + (width * scale - side) // 2, top * scale + (height * scale - side) // 2))
-qr_path.unlink()
 big.save(out)
 print(f'square {left},{top} {width}x{height} -> {out} {big.size}')
