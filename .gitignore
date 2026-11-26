@@ -10,3 +10,4 @@ public/fonts/
 public/photos/
 public/stage/
 .vercel
+.env*
