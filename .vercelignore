@@ -1,0 +1,11 @@
+node_modules
+.git
+.DS_Store
+data/admin-token.txt
+data/*.tmp
+posters/*.png
+public/fonts
+public/photos
+public/stage
+.env*
+.vercel
